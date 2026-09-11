@@ -9,6 +9,7 @@ from src.main import (
     get_service_name,
     scan_ports,
     validate_ipv4,
+    validate_port_range,
     validate_ports,
     write_json,
 )
@@ -44,6 +45,24 @@ class TestPortValidation(unittest.TestCase):
     def test_port_zero(self):
         with self.assertRaises(argparse.ArgumentTypeError):
             validate_ports("0")
+
+
+class TestPortRangeValidation(unittest.TestCase):
+    def test_valid_port_range(self):
+        result = validate_port_range("20-25")
+        self.assertEqual(result, [20, 21, 22, 23, 24, 25])
+
+    def test_malformed_port_range(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            validate_port_range("20")
+
+    def test_backwards_port_range(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            validate_port_range("100-20")
+
+    def test_port_range_too_high(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            validate_port_range("65000-70000")
 
 
 class TestServiceNames(unittest.TestCase):

@@ -55,6 +55,34 @@ def validate_ports(value):
     return ports
 
 
+def validate_port_range(value):
+    try:
+        start_text, end_text = value.split("-", maxsplit=1)
+        start = int(start_text)
+        end = int(end_text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "Port range must use the format START-END"
+        )
+
+    if start < 1 or start > 65535:
+        raise argparse.ArgumentTypeError(
+            f"Start port {start} is outside the valid range 1-65535"
+        )
+
+    if end < 1 or end > 65535:
+        raise argparse.ArgumentTypeError(
+            f"End port {end} is outside the valid range 1-65535"
+        )
+
+    if start > end:
+        raise argparse.ArgumentTypeError(
+            "Start port must not be greater than end port"
+        )
+
+    return list(range(start, end + 1))
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Discover open TCP ports on an authorised target."
@@ -68,12 +96,21 @@ def parse_arguments():
         help="IPv4 address to scan",
     )
 
-    parser.add_argument(
+    port_group = parser.add_mutually_exclusive_group()
+
+    port_group.add_argument(
         "-p",
         "--ports",
         type=validate_ports,
-        default=DEFAULT_PORTS,
         help="Comma-separated TCP ports to scan",
+    )
+
+    port_group.add_argument(
+        "-r",
+        "--range",
+        dest="port_range",
+        type=validate_port_range,
+        help="TCP port range to scan, for example 20-100",
     )
 
     parser.add_argument(
@@ -164,7 +201,13 @@ def main():
     args = parse_arguments()
 
     target = args.target
-    ports = args.ports
+
+    if args.ports:
+        ports = args.ports
+    elif args.port_range:
+        ports = args.port_range
+    else:
+        ports = DEFAULT_PORTS
 
     print(f"Scanning {target}...\n")
 

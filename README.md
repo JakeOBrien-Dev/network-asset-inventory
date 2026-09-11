@@ -48,6 +48,14 @@ python3 src/main.py --target 127.0.0.1 --ports 22,80,443 --json output/scan.json
 
 (Real scan output stored under output/ is excluded from Git to avoid accidentally publishing potentially sensitive infrastructure information.) 
 
+#### Scan a TCP port range:
+
+python3 src/main.py --target 127.0.0.1 --range 20-100
+
+or
+
+python3 src/main.py -t 127.0.0.1 -r 20-100
+
 ## Example Output
 
 Scanning 127.0.0.1...
@@ -117,3 +125,7 @@ The tool currently supports:
 - Differenciated TCP connection states
 - Conventional service-name mapping
 - Improved tabular scan output
+- TCP port-range scanning
+- Validation of malformed, backwards, and out-of-range port ranges
+- Mutually exclusive custom port-list and port-range options
+- 15 automated unit tests
