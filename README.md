@@ -42,6 +42,12 @@ python3 src/main.py -t 127.0.0.1 -p 22,80,443
 
 python3 src/main.py --help
 
+#### Export scan results to JSON:
+
+python3 src/main.py --target 127.0.0.1 --ports 22,80,443 --json output/scan.json
+
+(Real scan output stored under output/ is excluded from Git to avoid accidentally publishing potentially sensitive infrastructure information.) 
+
 ## Example Output
 
 Scanning 127.0.0.1...
@@ -72,6 +78,8 @@ python3 -m unittest discover -s tests -v
 - Out-of-range ports
 - Known service mappings
 - Unknown service handling
+- Structured scan-result generation
+- JSON report creation
 
 ## Planned Features
 

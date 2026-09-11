@@ -1,7 +1,9 @@
 import argparse
 import errno
 import ipaddress
+import json
 import socket
+from pathlib import Path
 
 
 DEFAULT_PORTS = [22, 80, 443, 8000]
@@ -74,6 +76,12 @@ def parse_arguments():
         help="Comma-separated TCP ports to scan",
     )
 
+    parser.add_argument(
+        "--json",
+        dest="json_output",
+        help="Write scan results to a JSON file",
+    )
+
     return parser.parse_args()
 
 
@@ -108,6 +116,50 @@ def get_service_name(port):
     return SERVICE_NAMES.get(port, "unknown")
 
 
+def scan_ports(target, ports):
+    results = []
+
+    for port in ports:
+        state = check_port(target, port)
+        service = get_service_name(port)
+
+        result = {
+            "port": port,
+            "protocol": "tcp",
+            "state": state,
+            "service": service,
+        }
+
+        results.append(result)
+
+    return results
+
+
+def display_results(results):
+    print(f"{'PORT':<10}{'STATE':<24}SERVICE")
+
+    for result in results:
+        port = result["port"]
+        state = result["state"]
+        service = result["service"]
+
+        print(f"{str(port) + '/tcp':<10}{state:<24}{service}")
+
+
+def write_json(target, results, output_path):
+    data = {
+        "target": target,
+        "results": results,
+    }
+
+    path = Path(output_path)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(data, file, indent=4)
+
+
 def main():
     args = parse_arguments()
 
@@ -115,13 +167,14 @@ def main():
     ports = args.ports
 
     print(f"Scanning {target}...\n")
-    print(f"{'PORT':<10}{'STATE':<24}SERVICE")
 
-    for port in ports:
-        state = check_port(target, port)
-        service = get_service_name(port)
+    results = scan_ports(target, ports)
 
-        print(f"{str(port) + '/tcp':<10}{state:<24}{service}")
+    display_results(results)
+
+    if args.json_output:
+        write_json(target, results, args.json_output)
+        print(f"\nResults written to {args.json_output}")
 
 
 if __name__ == "__main__":
