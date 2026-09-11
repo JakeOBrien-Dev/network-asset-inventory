@@ -1,9 +1,23 @@
 import argparse
+import errno
 import ipaddress
 import socket
 
 
 DEFAULT_PORTS = [22, 80, 443, 8000]
+
+SERVICE_NAMES = {
+    22: "ssh",
+    25: "smtp",
+    53: "dns",
+    80: "http",
+    110: "pop3",
+    143: "imap",
+    443: "https",
+    445: "smb",
+    3389: "rdp",
+    8000: "http-alt",
+}
 
 
 def validate_ipv4(value):
@@ -64,14 +78,34 @@ def parse_arguments():
 
 
 def check_port(target, port):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(1)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1)
 
-    result = sock.connect_ex((target, port))
+        try:
+            result = sock.connect_ex((target, port))
+        except socket.timeout:
+            return "FILTERED/UNREACHABLE"
+        except OSError:
+            return "ERROR"
 
-    sock.close()
+    if result == 0:
+        return "OPEN"
 
-    return result == 0
+    if result == errno.ECONNREFUSED:
+        return "CLOSED"
+
+    if result in {
+        errno.ETIMEDOUT,
+        errno.EHOSTUNREACH,
+        errno.ENETUNREACH,
+    }:
+        return "FILTERED/UNREACHABLE"
+
+    return "ERROR"
+
+
+def get_service_name(port):
+    return SERVICE_NAMES.get(port, "unknown")
 
 
 def main():
@@ -81,12 +115,13 @@ def main():
     ports = args.ports
 
     print(f"Scanning {target}...\n")
+    print(f"{'PORT':<10}{'STATE':<24}SERVICE")
 
     for port in ports:
-        if check_port(target, port):
-            print(f"{port}/tcp\tOPEN")
-        else:
-            print(f"{port}/tcp\tCLOSED/UNREACHABLE")
+        state = check_port(target, port)
+        service = get_service_name(port)
+
+        print(f"{str(port) + '/tcp':<10}{state:<24}{service}")
 
 
 if __name__ == "__main__":

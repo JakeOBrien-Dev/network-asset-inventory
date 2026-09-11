@@ -42,6 +42,18 @@ python3 src/main.py -t 127.0.0.1 -p 22,80,443
 
 python3 src/main.py --help
 
+## Example Output
+
+Scanning 127.0.0.1...
+
+PORT      STATE                   SERVICE
+22/tcp    CLOSED                  ssh
+80/tcp    CLOSED                  http
+443/tcp   CLOSED                  https
+8000/tcp  OPEN                    http-alt
+
+(Service names currently represent the conventional service associated with a port number and do not guarantee that the detected application is actually that service.)
+
 ## Planned Features
 
 Planned functions for this tool will include:
@@ -75,3 +87,6 @@ The tool currently supports:
 - User-selectable TCP ports
 - Port range validation
 - Command-line help and error handling
+- Differenciated TCP connection states
+- Conventional service-name mapping
+- Improved tabular scan output
