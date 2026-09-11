@@ -11,10 +11,12 @@ from src.main import (
     expand_targets,
     get_service_name,
     scan_ports,
+    scan_targets,
     validate_ipv4,
     validate_port_range,
     validate_ports,
     validate_target,
+    validate_workers,
     write_json,
     write_multi_host_json,
 )
@@ -105,6 +107,24 @@ class TestPortRangeValidation(unittest.TestCase):
             validate_port_range("65000-70000")
 
 
+class TestWorkerValidation(unittest.TestCase):
+    def test_valid_worker_count(self):
+        result = validate_workers("20")
+        self.assertEqual(result, 20)
+
+    def test_zero_workers_rejected(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            validate_workers("0")
+
+    def test_too_many_workers_rejected(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            validate_workers("101")
+
+    def test_non_numeric_workers_rejected(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            validate_workers("banana")
+
+
 class TestSocketStates(unittest.TestCase):
     @patch("src.main.socket.socket")
     def test_eagain_is_filtered_or_unreachable(self, mock_socket):
@@ -131,7 +151,11 @@ class TestScanResults(unittest.TestCase):
     def test_scan_ports_returns_structured_results(self, mock_check_port):
         mock_check_port.side_effect = ["OPEN", "CLOSED"]
 
-        results = scan_ports("127.0.0.1", [8000, 8001])
+        results = scan_ports(
+            "127.0.0.1",
+            [8000, 8001],
+            workers=2,
+        )
 
         expected = [
             {
@@ -149,6 +173,39 @@ class TestScanResults(unittest.TestCase):
         ]
 
         self.assertEqual(results, expected)
+
+    @patch("src.main.scan_host")
+    def test_scan_targets_returns_hosts_in_ip_order(self, mock_scan_host):
+        def fake_scan_host(host, ports, workers):
+            return {
+                "host": host,
+                "results": [],
+            }
+
+        mock_scan_host.side_effect = fake_scan_host
+
+        results = scan_targets(
+            [
+                "127.0.0.2",
+                "127.0.0.1",
+            ],
+            [8000],
+            workers=2,
+        )
+
+        self.assertEqual(
+            results,
+            [
+                {
+                    "host": "127.0.0.1",
+                    "results": [],
+                },
+                {
+                    "host": "127.0.0.2",
+                    "results": [],
+                },
+            ],
+        )
 
 
 class TestJSONExport(unittest.TestCase):

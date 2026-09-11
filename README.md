@@ -56,6 +56,19 @@ or
 
 python3 src/main.py -t 127.0.0.1 -r 20-100
 
+### Concurrent scanning
+
+The scanner uses a bounded thread pool to perform multiple TCP connection attempts concurrently.
+
+The default worker count is 20:
+
+python3 src/main.py --target 127.0.0.1 --range 1-100
+
+#### A custom worker count can be selected with -w or --workers:
+
+python3 src/main.py --target 127.0.0.1 --range 1-100 --workers 10
+
+
 #### Scan a small IPv4 subnet using CIDR notation:
 
 python3 src/main.py --target 127.0.0.0/30 --ports 8000,8001
@@ -101,6 +114,9 @@ python3 -m unittest discover -s tests -v
 - Subnet size limits
 - Multi-host JSON reports
 - Socket error regression handling
+- Worker-count validation
+- Concurrent port scan result handling
+- Deterministic host ordering after concurrent scans
 
 ## Planned Features
 
@@ -148,4 +164,11 @@ The tool currently supports:
 - Multi-host JSON export
 - Cross-platform socket error handling
 - 23 automated unit tests
+- GitHub Actions continuous integration
+- Concurrent TCP scanning using bounded thread pools
+- Configurable worker count
+- Concurrent multi-host scanning
+- Deterministic result ordering
+- Worker-count validation
+- 28 automated unit tests
 - GitHub Actions continuous integration
