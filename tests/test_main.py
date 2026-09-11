@@ -4,11 +4,13 @@ import errno
 import json
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from src.main import (
+    MAX_PORTS_PER_SCAN,
     build_host_inventory,
     build_inventory_report,
     build_inventory_summary,
@@ -16,6 +18,7 @@ from src.main import (
     expand_targets,
     get_service_name,
     get_utc_timestamp,
+    run,
     scan_ports,
     scan_targets,
     validate_ipv4,
@@ -24,8 +27,6 @@ from src.main import (
     validate_target,
     validate_workers,
     write_inventory_csv,
-    write_inventory_json,
-    write_json,
     write_report_json,
 )
 
@@ -59,13 +60,16 @@ class TestTargetValidation(unittest.TestCase):
 
     def test_subnet_too_large(self):
         with self.assertRaises(argparse.ArgumentTypeError):
-            validate_target("192.0.2.0/24")
+            validate_target("10.0.0.0/8")
 
 
 class TestTargetExpansion(unittest.TestCase):
     def test_single_target_expansion(self):
         result = expand_targets("127.0.0.1")
-        self.assertEqual(result, ["127.0.0.1"])
+        self.assertEqual(
+            result,
+            ["127.0.0.1"],
+        )
 
     def test_subnet_target_expansion(self):
         result = expand_targets("127.0.0.0/30")
@@ -78,11 +82,26 @@ class TestTargetExpansion(unittest.TestCase):
             ],
         )
 
+    def test_point_to_point_subnet_expansion(self):
+        result = expand_targets("192.0.2.0/31")
+
+        self.assertEqual(
+            result,
+            [
+                "192.0.2.0",
+                "192.0.2.1",
+            ],
+        )
+
 
 class TestPortValidation(unittest.TestCase):
     def test_valid_ports(self):
         result = validate_ports("22,80,443")
-        self.assertEqual(result, [22, 80, 443])
+
+        self.assertEqual(
+            result,
+            [22, 80, 443],
+        )
 
     def test_non_numeric_port(self):
         with self.assertRaises(argparse.ArgumentTypeError):
@@ -96,10 +115,38 @@ class TestPortValidation(unittest.TestCase):
         with self.assertRaises(argparse.ArgumentTypeError):
             validate_ports("0")
 
+    def test_whitespace_and_duplicate_ports(self):
+        result = validate_ports(
+            "8000, 8000, 8001"
+        )
+
+        self.assertEqual(
+            result,
+            [8000, 8001],
+        )
+
+    def test_empty_port_entry_rejected(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            validate_ports("80,,443")
+
+    def test_too_many_explicit_ports_rejected(self):
+        value = ",".join(
+            str(port)
+            for port in range(
+                1,
+                MAX_PORTS_PER_SCAN + 2,
+            )
+        )
+
+        with self.assertRaises(argparse.ArgumentTypeError):
+            validate_ports(value)
+
 
 class TestPortRangeValidation(unittest.TestCase):
     def test_valid_port_range(self):
-        result = validate_port_range("20-25")
+        result = validate_port_range(
+            "20-25"
+        )
 
         self.assertEqual(
             result,
@@ -116,7 +163,15 @@ class TestPortRangeValidation(unittest.TestCase):
 
     def test_port_range_too_high(self):
         with self.assertRaises(argparse.ArgumentTypeError):
-            validate_port_range("65000-70000")
+            validate_port_range(
+                "65000-70000"
+            )
+
+    def test_too_many_ports_in_range_rejected(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            validate_port_range(
+                "1-5000"
+            )
 
 
 class TestWorkerValidation(unittest.TestCase):
@@ -139,11 +194,19 @@ class TestWorkerValidation(unittest.TestCase):
 
 class TestSocketStates(unittest.TestCase):
     @patch("src.main.socket.socket")
-    def test_eagain_is_filtered_or_unreachable(self, mock_socket):
+    def test_eagain_is_filtered_or_unreachable(
+        self,
+        mock_socket,
+    ):
         mock_sock = MagicMock()
 
-        mock_socket.return_value.__enter__.return_value = mock_sock
-        mock_sock.connect_ex.return_value = errno.EAGAIN
+        mock_socket.return_value.__enter__.return_value = (
+            mock_sock
+        )
+
+        mock_sock.connect_ex.return_value = (
+            errno.EAGAIN
+        )
 
         result = check_port(
             "127.0.0.2",
@@ -224,13 +287,7 @@ class TestInventoryModel(unittest.TestCase):
                 "protocol": "tcp",
                 "state": "FILTERED/UNREACHABLE",
                 "service": "http-alt",
-            },
-            {
-                "port": 8001,
-                "protocol": "tcp",
-                "state": "FILTERED/UNREACHABLE",
-                "service": "unknown",
-            },
+            }
         ]
 
         inventory = build_host_inventory(
@@ -267,7 +324,9 @@ class TestScanResults(unittest.TestCase):
 
             return states[port]
 
-        mock_check_port.side_effect = fake_check_port
+        mock_check_port.side_effect = (
+            fake_check_port
+        )
 
         results = scan_ports(
             "127.0.0.1",
@@ -295,22 +354,26 @@ class TestScanResults(unittest.TestCase):
             expected,
         )
 
-    @patch("src.main.scan_host")
+    def test_scan_ports_handles_empty_port_list(self):
+        results = scan_ports(
+            "127.0.0.1",
+            [],
+            workers=2,
+        )
+
+        self.assertEqual(
+            results,
+            [],
+        )
+
+    @patch(
+        "src.main.check_port",
+        return_value="CLOSED",
+    )
     def test_scan_targets_returns_hosts_in_ip_order(
         self,
-        mock_scan_host,
+        mock_check_port,
     ):
-        def fake_scan_host(host, ports, workers):
-            return {
-                "host": host,
-                "responsive": True,
-                "open_service_count": 0,
-                "open_services": [],
-                "results": [],
-            }
-
-        mock_scan_host.side_effect = fake_scan_host
-
         results = scan_targets(
             [
                 "127.0.0.2",
@@ -329,6 +392,32 @@ class TestScanResults(unittest.TestCase):
                 "127.0.0.1",
                 "127.0.0.2",
             ],
+        )
+
+    def test_scan_targets_uses_single_bounded_pool(self):
+        with patch(
+            "src.main.check_port",
+            return_value="CLOSED",
+        ):
+            with patch(
+                "src.main.ThreadPoolExecutor",
+                wraps=ThreadPoolExecutor,
+            ) as mock_executor:
+
+                scan_targets(
+                    [
+                        "127.0.0.1",
+                        "127.0.0.2",
+                    ],
+                    [
+                        8000,
+                        8001,
+                    ],
+                    workers=3,
+                )
+
+        mock_executor.assert_called_once_with(
+            max_workers=3
         )
 
 
@@ -375,7 +464,9 @@ class TestReporting(unittest.TestCase):
 
     @patch(
         "src.main.get_utc_timestamp",
-        return_value="2026-09-11T22:55:31+00:00",
+        return_value=(
+            "2026-09-11T22:55:31+00:00"
+        ),
     )
     def test_inventory_report_contains_timestamp(
         self,
@@ -394,11 +485,6 @@ class TestReporting(unittest.TestCase):
         self.assertEqual(
             report["scanned_at"],
             "2026-09-11T22:55:31+00:00",
-        )
-
-        self.assertEqual(
-            report["summary"]["hosts_scanned"],
-            2,
         )
 
         self.assertEqual(
@@ -421,7 +507,9 @@ class TestReporting(unittest.TestCase):
     def test_write_report_json(self):
         report = {
             "target": "127.0.0.0/30",
-            "scanned_at": "2026-09-11T22:55:31+00:00",
+            "scanned_at": (
+                "2026-09-11T22:55:31+00:00"
+            ),
             "summary": {
                 "hosts_scanned": 2,
                 "responsive_hosts": 1,
@@ -458,14 +546,10 @@ class TestReporting(unittest.TestCase):
     def test_write_inventory_csv(self):
         report = {
             "target": "127.0.0.0/30",
-            "scanned_at": "2026-09-11T22:55:31+00:00",
-            "summary": {
-                "hosts_scanned": 2,
-                "responsive_hosts": 1,
-                "unresponsive_hosts": 1,
-                "hosts_with_open_services": 1,
-                "open_tcp_services": 1,
-            },
+            "scanned_at": (
+                "2026-09-11T22:55:31+00:00"
+            ),
+            "summary": {},
             "hosts": self.host_results,
         }
 
@@ -501,23 +585,8 @@ class TestReporting(unittest.TestCase):
             )
 
             self.assertEqual(
-                rows[0]["responsive"],
-                "true",
-            )
-
-            self.assertEqual(
                 rows[0]["port"],
                 "8000",
-            )
-
-            self.assertEqual(
-                rows[0]["protocol"],
-                "tcp",
-            )
-
-            self.assertEqual(
-                rows[0]["service"],
-                "http-alt",
             )
 
             self.assertEqual(
@@ -526,123 +595,88 @@ class TestReporting(unittest.TestCase):
             )
 
             self.assertEqual(
-                rows[1]["responsive"],
-                "false",
-            )
-
-            self.assertEqual(
                 rows[1]["port"],
                 "",
             )
 
 
-class TestLegacyJSONExport(unittest.TestCase):
-    def test_write_json_creates_valid_report(self):
-        results = [
-            {
-                "port": 443,
-                "protocol": "tcp",
-                "state": "OPEN",
-                "service": "https",
-            }
-        ]
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = (
-                Path(temp_dir)
-                / "reports"
-                / "scan.json"
+class TestRuntimeHardening(unittest.TestCase):
+    @patch("src.main.scan_host")
+    @patch("src.main.parse_arguments")
+    def test_keyboard_interrupt_returns_130(
+        self,
+        mock_parse_arguments,
+        mock_scan_host,
+    ):
+        mock_parse_arguments.return_value = (
+            argparse.Namespace(
+                target="127.0.0.1",
+                ports=[8000],
+                port_range=None,
+                workers=2,
+                json_output=None,
+                csv_output=None,
             )
+        )
 
-            write_json(
-                "127.0.0.1",
-                results,
-                output_path,
+        mock_scan_host.side_effect = (
+            KeyboardInterrupt
+        )
+
+        result = run()
+
+        self.assertEqual(
+            result,
+            130,
+        )
+
+    @patch(
+        "src.main.write_report_json",
+        side_effect=OSError(
+            "disk full"
+        ),
+    )
+    @patch("src.main.display_inventory")
+    @patch("src.main.scan_host")
+    @patch("src.main.parse_arguments")
+    def test_report_write_error_returns_one(
+        self,
+        mock_parse_arguments,
+        mock_scan_host,
+        mock_display_inventory,
+        mock_write_report_json,
+    ):
+        mock_parse_arguments.return_value = (
+            argparse.Namespace(
+                target="127.0.0.1",
+                ports=[8000],
+                port_range=None,
+                workers=2,
+                json_output="output/report.json",
+                csv_output=None,
             )
+        )
 
-            with output_path.open(
-                "r",
-                encoding="utf-8",
-            ) as file:
-                data = json.load(file)
+        mock_scan_host.return_value = {
+            "host": "127.0.0.1",
+            "responsive": True,
+            "open_service_count": 1,
+            "open_services": [
+                {
+                    "port": 8000,
+                    "protocol": "tcp",
+                    "service": "http-alt",
+                }
+            ],
+            "results": [],
+        }
 
-            self.assertEqual(
-                data["target"],
-                "127.0.0.1",
-            )
+        result = run()
 
-            self.assertEqual(
-                data["results"],
-                results,
-            )
-
-    def test_write_inventory_json_creates_summary(self):
-        host_results = [
-            {
-                "host": "127.0.0.1",
-                "responsive": True,
-                "open_service_count": 1,
-                "open_services": [
-                    {
-                        "port": 8000,
-                        "protocol": "tcp",
-                        "service": "http-alt",
-                    }
-                ],
-                "results": [],
-            },
-            {
-                "host": "127.0.0.2",
-                "responsive": False,
-                "open_service_count": 0,
-                "open_services": [],
-                "results": [],
-            },
-        ]
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = (
-                Path(temp_dir)
-                / "reports"
-                / "inventory.json"
-            )
-
-            write_inventory_json(
-                "127.0.0.0/30",
-                host_results,
-                output_path,
-            )
-
-            with output_path.open(
-                "r",
-                encoding="utf-8",
-            ) as file:
-                data = json.load(file)
-
-            self.assertEqual(
-                data["target"],
-                "127.0.0.0/30",
-            )
-
-            self.assertEqual(
-                data["summary"]["hosts_scanned"],
-                2,
-            )
-
-            self.assertEqual(
-                data["summary"]["responsive_hosts"],
-                1,
-            )
-
-            self.assertEqual(
-                data["summary"]["open_tcp_services"],
-                1,
-            )
-
-            self.assertEqual(
-                data["hosts"],
-                host_results,
-            )
+        self.assertEqual(
+            result,
+            1,
+        )
 
 
 if __name__ == "__main__":

@@ -206,6 +206,21 @@ Planned functions for this tool will include:
 
 Real scan results may contain sesitive data such as private IP addresses, hostnames and exposed services so I will not be commiting real world scan results into this repo I will use sanitised or sythentic examples instead.
 
+## Safety and Reliability
+
+The scanner includes several safeguards intended to keep operation predictable and controlled:
+
+- IPv4 subnet scanning is limited to 16 usable hosts.
+- Individual scans are limited to 4,096 TCP ports.
+- Concurrent connection attempts use a globally bounded worker pool.
+- Worker counts are limited to 1–100.
+- Duplicate ports are automatically removed.
+- Invalid and malformed input is rejected before scanning begins.
+- `Ctrl+C` terminates a scan cleanly.
+- Report-writing failures return a non-zero exit status.
+- Raw scan output is excluded from Git by default.
+
+These limits are intentional. The project is designed as an educational asset-inventory tool rather than a replacement for mature scanners such as Nmap.
 
 ## Project Status
 
@@ -245,4 +260,10 @@ The tool currently supports:
 - CSV inventory export
 - Summary statistics
 - Report-friendly service records
-- 35 automated unit tests
+- Global bounded concurrency
+- Port scan-size safeguards
+- Duplicate port handling
+- `/31` subnet handling
+- Graceful keyboard interruption
+- Report-write error handling
+- 42 automated unit tests
