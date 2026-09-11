@@ -1,9 +1,11 @@
 import argparse
+import csv
 import errno
 import ipaddress
 import json
 import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -211,7 +213,13 @@ def parse_arguments():
     parser.add_argument(
         "--json",
         dest="json_output",
-        help="Write scan results to a JSON file",
+        help="Write inventory report to a JSON file",
+    )
+
+    parser.add_argument(
+        "--csv",
+        dest="csv_output",
+        help="Write inventory report to a CSV file",
     )
 
     return parser.parse_args()
@@ -424,45 +432,82 @@ def scan_targets(
     return host_results
 
 
-def display_results(results):
-    print(
-        f"{'PORT':<10}"
-        f"{'STATE':<24}"
-        f"SERVICE"
+def build_inventory_summary(host_results):
+    hosts_scanned = len(
+        host_results
     )
 
-    for result in results:
-        port = result["port"]
-        state = result["state"]
-        service = result["service"]
+    responsive_hosts = sum(
+        1
+        for host in host_results
+        if host["responsive"]
+    )
 
-        print(
-            f"{str(port) + '/tcp':<10}"
-            f"{state:<24}"
-            f"{service}"
-        )
+    unresponsive_hosts = (
+        hosts_scanned
+        - responsive_hosts
+    )
+
+    hosts_with_open_services = sum(
+        1
+        for host in host_results
+        if host["open_service_count"] > 0
+    )
+
+    open_tcp_services = sum(
+        host["open_service_count"]
+        for host in host_results
+    )
+
+    return {
+        "hosts_scanned": hosts_scanned,
+        "responsive_hosts": responsive_hosts,
+        "unresponsive_hosts": unresponsive_hosts,
+        "hosts_with_open_services": hosts_with_open_services,
+        "open_tcp_services": open_tcp_services,
+    }
+
+
+def get_utc_timestamp():
+    return datetime.now(
+        timezone.utc
+    ).isoformat(
+        timespec="seconds"
+    )
+
+
+def build_inventory_report(
+    target,
+    host_results,
+):
+    return {
+        "target": target,
+        "scanned_at": get_utc_timestamp(),
+        "summary": build_inventory_summary(
+            host_results
+        ),
+        "hosts": host_results,
+    }
 
 
 def display_inventory(host_results):
-    responsive_hosts = 0
-    open_services = 0
+    summary = build_inventory_summary(
+        host_results
+    )
 
     for host_result in host_results:
         host = host_result["host"]
         responsive = host_result["responsive"]
         services = host_result["open_services"]
 
-        if responsive:
-            responsive_hosts += 1
-
-        open_services += len(services)
-
         print(f"\nHost: {host}")
 
         if responsive:
             print("Status: responsive")
         else:
-            print("Status: no TCP response observed")
+            print(
+                "Status: no TCP response observed"
+            )
 
         if services:
             print("Open services:")
@@ -476,17 +521,166 @@ def display_inventory(host_results):
                     f"{service['service']}"
                 )
         else:
-            print("Open services: none detected")
+            print(
+                "Open services: none detected"
+            )
 
     print("\nSummary")
+
+    print(
+        f"Hosts scanned: "
+        f"{summary['hosts_scanned']}"
+    )
+
     print(
         f"Responsive hosts: "
-        f"{responsive_hosts}/{len(host_results)}"
+        f"{summary['responsive_hosts']}"
     )
+
+    print(
+        f"No TCP response observed: "
+        f"{summary['unresponsive_hosts']}"
+    )
+
+    print(
+        f"Hosts with open services: "
+        f"{summary['hosts_with_open_services']}"
+    )
+
     print(
         f"Open TCP services: "
-        f"{open_services}"
+        f"{summary['open_tcp_services']}"
     )
+
+
+def prepare_output_path(output_path):
+    path = Path(
+        output_path
+    )
+
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    return path
+
+
+def write_report_json(
+    report,
+    output_path,
+):
+    path = prepare_output_path(
+        output_path
+    )
+
+    with path.open(
+        "w",
+        encoding="utf-8",
+    ) as file:
+
+        json.dump(
+            report,
+            file,
+            indent=4,
+        )
+
+
+def write_inventory_csv(
+    report,
+    output_path,
+):
+    path = prepare_output_path(
+        output_path
+    )
+
+    fieldnames = [
+        "scan_target",
+        "scanned_at",
+        "host",
+        "responsive",
+        "open_service_count",
+        "port",
+        "protocol",
+        "service",
+    ]
+
+    with path.open(
+        "w",
+        encoding="utf-8",
+        newline="",
+    ) as file:
+
+        writer = csv.DictWriter(
+            file,
+            fieldnames=fieldnames,
+        )
+
+        writer.writeheader()
+
+        for host_result in report["hosts"]:
+            services = host_result[
+                "open_services"
+            ]
+
+            if services:
+                for service in services:
+                    writer.writerow(
+                        {
+                            "scan_target": report[
+                                "target"
+                            ],
+                            "scanned_at": report[
+                                "scanned_at"
+                            ],
+                            "host": host_result[
+                                "host"
+                            ],
+                            "responsive": str(
+                                host_result[
+                                    "responsive"
+                                ]
+                            ).lower(),
+                            "open_service_count": (
+                                host_result[
+                                    "open_service_count"
+                                ]
+                            ),
+                            "port": service[
+                                "port"
+                            ],
+                            "protocol": service[
+                                "protocol"
+                            ],
+                            "service": service[
+                                "service"
+                            ],
+                        }
+                    )
+
+            else:
+                writer.writerow(
+                    {
+                        "scan_target": report[
+                            "target"
+                        ],
+                        "scanned_at": report[
+                            "scanned_at"
+                        ],
+                        "host": host_result[
+                            "host"
+                        ],
+                        "responsive": str(
+                            host_result[
+                                "responsive"
+                            ]
+                        ).lower(),
+                        "open_service_count": 0,
+                        "port": "",
+                        "protocol": "",
+                        "service": "",
+                    }
+                )
 
 
 def write_json(
@@ -499,11 +693,8 @@ def write_json(
         "results": results,
     }
 
-    path = Path(output_path)
-
-    path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
+    path = prepare_output_path(
+        output_path
     )
 
     with path.open(
@@ -523,53 +714,25 @@ def write_inventory_json(
     host_results,
     output_path,
 ):
-    responsive_hosts = sum(
-        1
-        for host in host_results
-        if host["responsive"]
+    report = build_inventory_report(
+        target,
+        host_results,
     )
 
-    open_service_count = sum(
-        host["open_service_count"]
-        for host in host_results
+    write_report_json(
+        report,
+        output_path,
     )
-
-    data = {
-        "target": target,
-        "summary": {
-            "hosts_scanned": len(
-                host_results
-            ),
-            "responsive_hosts": responsive_hosts,
-            "open_tcp_services": open_service_count,
-        },
-        "hosts": host_results,
-    }
-
-    path = Path(output_path)
-
-    path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    with path.open(
-        "w",
-        encoding="utf-8",
-    ) as file:
-
-        json.dump(
-            data,
-            file,
-            indent=4,
-        )
 
 
 def main():
     args = parse_arguments()
 
     target = args.target
-    targets = expand_targets(target)
+    targets = expand_targets(
+        target
+    )
+
     workers = args.workers
 
     if args.ports:
@@ -582,56 +745,56 @@ def main():
         ports = DEFAULT_PORTS
 
     if len(targets) == 1:
-        host_result = scan_host(
-            targets[0],
+        host_results = [
+            scan_host(
+                targets[0],
+                ports,
+                workers,
+            )
+        ]
+
+    else:
+        print(
+            f"Scanning {target} "
+            f"({len(targets)} hosts) "
+            f"with up to {workers} workers..."
+        )
+
+        host_results = scan_targets(
+            targets,
             ports,
             workers,
         )
-
-        display_inventory(
-            [host_result]
-        )
-
-        if args.json_output:
-            write_inventory_json(
-                target,
-                [host_result],
-                args.json_output,
-            )
-
-            print(
-                f"\nResults written to "
-                f"{args.json_output}"
-            )
-
-        return
-
-    print(
-        f"Scanning {target} "
-        f"({len(targets)} hosts) "
-        f"with up to {workers} workers..."
-    )
-
-    host_results = scan_targets(
-        targets,
-        ports,
-        workers,
-    )
 
     display_inventory(
         host_results
     )
 
+    report = build_inventory_report(
+        target,
+        host_results,
+    )
+
     if args.json_output:
-        write_inventory_json(
-            target,
-            host_results,
+        write_report_json(
+            report,
             args.json_output,
         )
 
         print(
-            f"\nResults written to "
+            f"\nJSON report written to "
             f"{args.json_output}"
+        )
+
+    if args.csv_output:
+        write_inventory_csv(
+            report,
+            args.csv_output,
+        )
+
+        print(
+            f"CSV report written to "
+            f"{args.csv_output}"
         )
 
 
