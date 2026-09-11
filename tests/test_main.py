@@ -1,17 +1,22 @@
 import argparse
+import errno
 import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from src.main import (
+    check_port,
+    expand_targets,
     get_service_name,
     scan_ports,
     validate_ipv4,
     validate_port_range,
     validate_ports,
+    validate_target,
     write_json,
+    write_multi_host_json,
 )
 
 
@@ -27,6 +32,41 @@ class TestIPv4Validation(unittest.TestCase):
     def test_ipv6_rejected(self):
         with self.assertRaises(argparse.ArgumentTypeError):
             validate_ipv4("::1")
+
+
+class TestTargetValidation(unittest.TestCase):
+    def test_valid_single_target(self):
+        result = validate_target("127.0.0.1")
+        self.assertEqual(result, "127.0.0.1")
+
+    def test_valid_subnet(self):
+        result = validate_target("127.0.0.1/30")
+        self.assertEqual(result, "127.0.0.0/30")
+
+    def test_invalid_subnet(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            validate_target("192.168.1.0/banana")
+
+    def test_subnet_too_large(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            validate_target("192.0.2.0/24")
+
+
+class TestTargetExpansion(unittest.TestCase):
+    def test_single_target_expansion(self):
+        result = expand_targets("127.0.0.1")
+        self.assertEqual(result, ["127.0.0.1"])
+
+    def test_subnet_target_expansion(self):
+        result = expand_targets("127.0.0.0/30")
+
+        self.assertEqual(
+            result,
+            [
+                "127.0.0.1",
+                "127.0.0.2",
+            ],
+        )
 
 
 class TestPortValidation(unittest.TestCase):
@@ -63,6 +103,19 @@ class TestPortRangeValidation(unittest.TestCase):
     def test_port_range_too_high(self):
         with self.assertRaises(argparse.ArgumentTypeError):
             validate_port_range("65000-70000")
+
+
+class TestSocketStates(unittest.TestCase):
+    @patch("src.main.socket.socket")
+    def test_eagain_is_filtered_or_unreachable(self, mock_socket):
+        mock_sock = MagicMock()
+        mock_socket.return_value.__enter__.return_value = mock_sock
+
+        mock_sock.connect_ex.return_value = errno.EAGAIN
+
+        result = check_port("127.0.0.2", 8000)
+
+        self.assertEqual(result, "FILTERED/UNREACHABLE")
 
 
 class TestServiceNames(unittest.TestCase):
@@ -123,6 +176,47 @@ class TestJSONExport(unittest.TestCase):
 
             self.assertEqual(data["target"], "127.0.0.1")
             self.assertEqual(data["results"], results)
+
+    def test_write_multi_host_json_creates_valid_report(self):
+        host_results = [
+            {
+                "host": "127.0.0.1",
+                "results": [
+                    {
+                        "port": 8000,
+                        "protocol": "tcp",
+                        "state": "OPEN",
+                        "service": "http-alt",
+                    }
+                ],
+            },
+            {
+                "host": "127.0.0.2",
+                "results": [
+                    {
+                        "port": 8000,
+                        "protocol": "tcp",
+                        "state": "FILTERED/UNREACHABLE",
+                        "service": "http-alt",
+                    }
+                ],
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "reports" / "subnet-scan.json"
+
+            write_multi_host_json(
+                "127.0.0.0/30",
+                host_results,
+                output_path,
+            )
+
+            with output_path.open("r", encoding="utf-8") as file:
+                data = json.load(file)
+
+            self.assertEqual(data["target"], "127.0.0.0/30")
+            self.assertEqual(data["hosts"], host_results)
 
 
 if __name__ == "__main__":
