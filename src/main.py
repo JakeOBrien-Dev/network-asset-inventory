@@ -4,6 +4,7 @@ import errno
 import ipaddress
 import json
 import socket
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,8 +15,9 @@ DEFAULT_PORTS = [22, 80, 443, 8000]
 MAX_SUBNET_HOSTS = 16
 
 DEFAULT_WORKERS = 20
-
 MAX_WORKERS = 100
+
+MAX_PORTS_PER_SCAN = 4096
 
 SERVICE_NAMES = {
     22: "ssh",
@@ -47,6 +49,16 @@ def validate_ipv4(value):
     return str(address)
 
 
+def usable_host_count(network):
+    if network.prefixlen == 32:
+        return 1
+
+    if network.prefixlen == 31:
+        return 2
+
+    return max(network.num_addresses - 2, 0)
+
+
 def validate_target(value):
     if "/" not in value:
         return validate_ipv4(value)
@@ -66,11 +78,11 @@ def validate_target(value):
             "Only IPv4 networks are currently supported"
         )
 
-    hosts = list(network.hosts())
+    host_count = usable_host_count(network)
 
-    if len(hosts) > MAX_SUBNET_HOSTS:
+    if host_count > MAX_SUBNET_HOSTS:
         raise argparse.ArgumentTypeError(
-            f"Subnet contains {len(hosts)} usable hosts. "
+            f"Subnet contains {host_count} usable hosts. "
             f"Current limit is {MAX_SUBNET_HOSTS} hosts"
         )
 
@@ -93,15 +105,30 @@ def expand_targets(target):
 
 
 def validate_ports(value):
+    raw_ports = [
+        part.strip()
+        for part in value.split(",")
+    ]
+
+    if not raw_ports or any(
+        not part
+        for part in raw_ports
+    ):
+        raise argparse.ArgumentTypeError(
+            "Ports must be comma-separated numbers"
+        )
+
     try:
         ports = [
             int(port)
-            for port in value.split(",")
+            for port in raw_ports
         ]
     except ValueError:
         raise argparse.ArgumentTypeError(
             "Ports must be comma-separated numbers"
         )
+
+    unique_ports = []
 
     for port in ports:
         if port < 1 or port > 65535:
@@ -109,7 +136,16 @@ def validate_ports(value):
                 f"Port {port} is outside the valid range 1-65535"
             )
 
-    return ports
+        if port not in unique_ports:
+            unique_ports.append(port)
+
+    if len(unique_ports) > MAX_PORTS_PER_SCAN:
+        raise argparse.ArgumentTypeError(
+            f"A maximum of {MAX_PORTS_PER_SCAN} "
+            f"ports may be scanned at once"
+        )
+
+    return unique_ports
 
 
 def validate_port_range(value):
@@ -119,8 +155,8 @@ def validate_port_range(value):
             maxsplit=1,
         )
 
-        start = int(start_text)
-        end = int(end_text)
+        start = int(start_text.strip())
+        end = int(end_text.strip())
 
     except ValueError:
         raise argparse.ArgumentTypeError(
@@ -140,6 +176,18 @@ def validate_port_range(value):
     if start > end:
         raise argparse.ArgumentTypeError(
             "Start port must not be greater than end port"
+        )
+
+    port_count = (
+        end
+        - start
+        + 1
+    )
+
+    if port_count > MAX_PORTS_PER_SCAN:
+        raise argparse.ArgumentTypeError(
+            f"A maximum of {MAX_PORTS_PER_SCAN} "
+            f"ports may be scanned at once"
         )
 
     return list(
@@ -274,7 +322,9 @@ def build_result(port, state):
         "port": port,
         "protocol": "tcp",
         "state": state,
-        "service": get_service_name(port),
+        "service": get_service_name(
+            port
+        ),
     }
 
 
@@ -283,6 +333,9 @@ def scan_ports(
     ports,
     workers=DEFAULT_WORKERS,
 ):
+    if not ports:
+        return []
+
     results = []
 
     worker_count = min(
@@ -306,7 +359,9 @@ def scan_ports(
         for future in as_completed(
             future_to_port
         ):
-            port = future_to_port[future]
+            port = future_to_port[
+                future
+            ]
 
             try:
                 state = future.result()
@@ -321,22 +376,33 @@ def scan_ports(
             )
 
     results.sort(
-        key=lambda result: result["port"]
+        key=lambda result: result[
+            "port"
+        ]
     )
 
     return results
 
 
-def build_host_inventory(host, results):
+def build_host_inventory(
+    host,
+    results,
+):
     open_services = []
 
     for result in results:
         if result["state"] == "OPEN":
             open_services.append(
                 {
-                    "port": result["port"],
-                    "protocol": result["protocol"],
-                    "service": result["service"],
+                    "port": result[
+                        "port"
+                    ],
+                    "protocol": result[
+                        "protocol"
+                    ],
+                    "service": result[
+                        "service"
+                    ],
                 }
             )
 
@@ -381,58 +447,102 @@ def scan_targets(
     ports,
     workers=DEFAULT_WORKERS,
 ):
-    host_results = []
+    if not targets:
+        return []
+
+    if not ports:
+        return [
+            build_host_inventory(
+                host,
+                [],
+            )
+            for host in targets
+        ]
+
+    results_by_host = {
+        host: []
+        for host in targets
+    }
+
+    total_jobs = (
+        len(targets)
+        * len(ports)
+    )
 
     worker_count = min(
         workers,
-        len(targets),
+        total_jobs,
     )
 
     with ThreadPoolExecutor(
         max_workers=worker_count
     ) as executor:
 
-        future_to_host = {
+        future_to_job = {
             executor.submit(
-                scan_host,
+                check_port,
                 host,
-                ports,
-                workers,
-            ): host
+                port,
+            ): (
+                host,
+                port,
+            )
             for host in targets
+            for port in ports
         }
 
         for future in as_completed(
-            future_to_host
+            future_to_job
         ):
-            host = future_to_host[future]
-
-            try:
-                result = future.result()
-
-            except Exception:
-                result = {
-                    "host": host,
-                    "responsive": False,
-                    "open_service_count": 0,
-                    "open_services": [],
-                    "results": [],
-                }
-
-            host_results.append(
-                result
+            host, port = (
+                future_to_job[
+                    future
+                ]
             )
 
-    host_results.sort(
-        key=lambda item: ipaddress.ip_address(
-            item["host"]
+            try:
+                state = future.result()
+            except Exception:
+                state = "ERROR"
+
+            results_by_host[
+                host
+            ].append(
+                build_result(
+                    port,
+                    state,
+                )
+            )
+
+    host_results = []
+
+    for host in sorted(
+        targets,
+        key=ipaddress.ip_address,
+    ):
+        results = results_by_host[
+            host
+        ]
+
+        results.sort(
+            key=lambda result: result[
+                "port"
+            ]
         )
-    )
+
+        host_results.append(
+            build_host_inventory(
+                host,
+                results,
+            )
+        )
 
     return host_results
 
 
-def build_inventory_summary(host_results):
+def build_inventory_summary(
+    host_results,
+):
     hosts_scanned = len(
         host_results
     )
@@ -451,7 +561,9 @@ def build_inventory_summary(host_results):
     hosts_with_open_services = sum(
         1
         for host in host_results
-        if host["open_service_count"] > 0
+        if host[
+            "open_service_count"
+        ] > 0
     )
 
     open_tcp_services = sum(
@@ -490,20 +602,28 @@ def build_inventory_report(
     }
 
 
-def display_inventory(host_results):
+def display_inventory(
+    host_results,
+):
     summary = build_inventory_summary(
         host_results
     )
 
     for host_result in host_results:
         host = host_result["host"]
-        responsive = host_result["responsive"]
-        services = host_result["open_services"]
+        responsive = host_result[
+            "responsive"
+        ]
+        services = host_result[
+            "open_services"
+        ]
 
         print(f"\nHost: {host}")
 
         if responsive:
-            print("Status: responsive")
+            print(
+                "Status: responsive"
+            )
         else:
             print(
                 "Status: no TCP response observed"
@@ -520,6 +640,7 @@ def display_inventory(host_results):
                     f"  "
                     f"{service['service']}"
                 )
+
         else:
             print(
                 "Open services: none detected"
@@ -553,10 +674,12 @@ def display_inventory(host_results):
     )
 
 
-def prepare_output_path(output_path):
+def prepare_output_path(
+    output_path,
+):
     path = Path(
         output_path
-    )
+    ).expanduser()
 
     path.parent.mkdir(
         parents=True,
@@ -618,7 +741,9 @@ def write_inventory_csv(
 
         writer.writeheader()
 
-        for host_result in report["hosts"]:
+        for host_result in report[
+            "hosts"
+        ]:
             services = host_result[
                 "open_services"
             ]
@@ -683,49 +808,7 @@ def write_inventory_csv(
                 )
 
 
-def write_json(
-    target,
-    results,
-    output_path,
-):
-    data = {
-        "target": target,
-        "results": results,
-    }
-
-    path = prepare_output_path(
-        output_path
-    )
-
-    with path.open(
-        "w",
-        encoding="utf-8",
-    ) as file:
-
-        json.dump(
-            data,
-            file,
-            indent=4,
-        )
-
-
-def write_inventory_json(
-    target,
-    host_results,
-    output_path,
-):
-    report = build_inventory_report(
-        target,
-        host_results,
-    )
-
-    write_report_json(
-        report,
-        output_path,
-    )
-
-
-def main():
+def run():
     args = parse_arguments()
 
     target = args.target
@@ -744,27 +827,36 @@ def main():
     else:
         ports = DEFAULT_PORTS
 
-    if len(targets) == 1:
-        host_results = [
-            scan_host(
-                targets[0],
+    try:
+        if len(targets) == 1:
+            host_results = [
+                scan_host(
+                    targets[0],
+                    ports,
+                    workers,
+                )
+            ]
+
+        else:
+            print(
+                f"Scanning {target} "
+                f"({len(targets)} hosts) "
+                f"with up to {workers} workers..."
+            )
+
+            host_results = scan_targets(
+                targets,
                 ports,
                 workers,
             )
-        ]
 
-    else:
+    except KeyboardInterrupt:
         print(
-            f"Scanning {target} "
-            f"({len(targets)} hosts) "
-            f"with up to {workers} workers..."
+            "\nScan cancelled by user.",
+            file=sys.stderr,
         )
 
-        host_results = scan_targets(
-            targets,
-            ports,
-            workers,
-        )
+        return 130
 
     display_inventory(
         host_results
@@ -775,27 +867,45 @@ def main():
         host_results,
     )
 
-    if args.json_output:
-        write_report_json(
-            report,
-            args.json_output,
-        )
+    try:
+        if args.json_output:
+            write_report_json(
+                report,
+                args.json_output,
+            )
 
+            print(
+                f"\nJSON report written to "
+                f"{args.json_output}"
+            )
+
+        if args.csv_output:
+            write_inventory_csv(
+                report,
+                args.csv_output,
+            )
+
+            print(
+                f"CSV report written to "
+                f"{args.csv_output}"
+            )
+
+    except OSError as error:
         print(
-            f"\nJSON report written to "
-            f"{args.json_output}"
+            f"\nUnable to write report: "
+            f"{error}",
+            file=sys.stderr,
         )
 
-    if args.csv_output:
-        write_inventory_csv(
-            report,
-            args.csv_output,
-        )
+        return 1
 
-        print(
-            f"CSV report written to "
-            f"{args.csv_output}"
-        )
+    return 0
+
+
+def main():
+    raise SystemExit(
+        run()
+    )
 
 
 if __name__ == "__main__":
