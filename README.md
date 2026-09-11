@@ -104,6 +104,46 @@ Summary
 Responsive hosts: 1/2
 Open TCP services: 1
 
+## Reporting
+
+The tool can export inventory reports in both JSON and CSV formats.
+
+Each report includes:
+
+- Scan target
+- UTC scan timestamp
+- Number of hosts scanned
+- Number of responsive hosts
+- Number of hosts with no observed TCP response
+- Number of hosts exposing open services
+- Total number of detected open TCP services
+- Per-host asset information
+- Open service details
+
+### JSON export
+
+python3 src/main.py \
+  --target 127.0.0.0/30 \
+  --ports 8000,8001 \
+  --json output/inventory.json
+
+### CVS export
+
+python3 src/main.py \
+  --target 127.0.0.0/30 \
+  --ports 8000,8001 \
+  --csv output/inventory.csv
+
+### Both formats can be generated in the same scan:
+
+python3 src/main.py \
+  --target 127.0.0.0/30 \
+  --ports 8000,8001 \
+  --json output/inventory.json \
+  --csv output/inventory.csv
+
+(Generated reports under output/ are excluded from Git to reduce the risk of accidentally publishing sensitive infrastructure information)
+
 ## Testing
 
 This project uses Python's built in 'unittest' framework.
@@ -137,6 +177,12 @@ python3 -m unittest discover -s tests -v
 - Open-service extraction
 - Host inventory construction
 - Inventory JSON summary generation
+- Inventory summary calculation
+- UTC timestamp generation
+- Timestamped report construction
+- JSON report serialisation
+- CSV report generation
+- Hosts without open services remaining visible in exported inventories
 
 ## Planned Features
 
@@ -177,24 +223,26 @@ The tool currently supports:
 - TCP port-range scanning
 - Validation of malformed, backwards, and out-of-range port ranges
 - Mutually exclusive custom port-list and port-range options
-- 15 automated unit tests
 - Individual IPv4 host scanning
 - Small IPv4 subnet scanning using CIDR notation
 - Multi-host scan results
 - Multi-host JSON export
 - Cross-platform socket error handling
-- 23 automated unit tests
 - GitHub Actions continuous integration
 - Concurrent TCP scanning using bounded thread pools
 - Configurable worker count
 - Concurrent multi-host scanning
 - Deterministic result ordering
 - Worker-count validation
-- 28 automated unit tests
 - GitHub Actions continuous integration
 - Host-level asset inventory records
 - Responsive-host identification
 - Open-service summaries
 - Inventory-level JSON reporting
 - Detailed raw scan results retained alongside asset summaries
-- 30 automated unit tests
+- UTC timestamped inventory reports
+- JSON inventory export
+- CSV inventory export
+- Summary statistics
+- Report-friendly service records
+- 35 automated unit tests

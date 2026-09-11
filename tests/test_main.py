@@ -1,16 +1,21 @@
 import argparse
+import csv
 import errno
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from src.main import (
     build_host_inventory,
+    build_inventory_report,
+    build_inventory_summary,
     check_port,
     expand_targets,
     get_service_name,
+    get_utc_timestamp,
     scan_ports,
     scan_targets,
     validate_ipv4,
@@ -18,8 +23,10 @@ from src.main import (
     validate_ports,
     validate_target,
     validate_workers,
+    write_inventory_csv,
     write_inventory_json,
     write_json,
+    write_report_json,
 )
 
 
@@ -93,6 +100,7 @@ class TestPortValidation(unittest.TestCase):
 class TestPortRangeValidation(unittest.TestCase):
     def test_valid_port_range(self):
         result = validate_port_range("20-25")
+
         self.assertEqual(
             result,
             [20, 21, 22, 23, 24, 25],
@@ -251,10 +259,15 @@ class TestScanResults(unittest.TestCase):
         self,
         mock_check_port,
     ):
-        mock_check_port.side_effect = [
-            "OPEN",
-            "CLOSED",
-        ]
+        def fake_check_port(target, port):
+            states = {
+                8000: "OPEN",
+                8001: "CLOSED",
+            }
+
+            return states[port]
+
+        mock_check_port.side_effect = fake_check_port
 
         results = scan_ports(
             "127.0.0.1",
@@ -319,7 +332,211 @@ class TestScanResults(unittest.TestCase):
         )
 
 
-class TestJSONExport(unittest.TestCase):
+class TestReporting(unittest.TestCase):
+    def setUp(self):
+        self.host_results = [
+            {
+                "host": "127.0.0.1",
+                "responsive": True,
+                "open_service_count": 1,
+                "open_services": [
+                    {
+                        "port": 8000,
+                        "protocol": "tcp",
+                        "service": "http-alt",
+                    }
+                ],
+                "results": [],
+            },
+            {
+                "host": "127.0.0.2",
+                "responsive": False,
+                "open_service_count": 0,
+                "open_services": [],
+                "results": [],
+            },
+        ]
+
+    def test_inventory_summary(self):
+        summary = build_inventory_summary(
+            self.host_results
+        )
+
+        self.assertEqual(
+            summary,
+            {
+                "hosts_scanned": 2,
+                "responsive_hosts": 1,
+                "unresponsive_hosts": 1,
+                "hosts_with_open_services": 1,
+                "open_tcp_services": 1,
+            },
+        )
+
+    @patch(
+        "src.main.get_utc_timestamp",
+        return_value="2026-09-11T22:55:31+00:00",
+    )
+    def test_inventory_report_contains_timestamp(
+        self,
+        mock_timestamp,
+    ):
+        report = build_inventory_report(
+            "127.0.0.0/30",
+            self.host_results,
+        )
+
+        self.assertEqual(
+            report["target"],
+            "127.0.0.0/30",
+        )
+
+        self.assertEqual(
+            report["scanned_at"],
+            "2026-09-11T22:55:31+00:00",
+        )
+
+        self.assertEqual(
+            report["summary"]["hosts_scanned"],
+            2,
+        )
+
+        self.assertEqual(
+            report["hosts"],
+            self.host_results,
+        )
+
+    def test_utc_timestamp_uses_utc(self):
+        timestamp = get_utc_timestamp()
+
+        parsed = datetime.fromisoformat(
+            timestamp
+        )
+
+        self.assertEqual(
+            parsed.utcoffset(),
+            timedelta(0),
+        )
+
+    def test_write_report_json(self):
+        report = {
+            "target": "127.0.0.0/30",
+            "scanned_at": "2026-09-11T22:55:31+00:00",
+            "summary": {
+                "hosts_scanned": 2,
+                "responsive_hosts": 1,
+                "unresponsive_hosts": 1,
+                "hosts_with_open_services": 1,
+                "open_tcp_services": 1,
+            },
+            "hosts": self.host_results,
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = (
+                Path(temp_dir)
+                / "reports"
+                / "inventory.json"
+            )
+
+            write_report_json(
+                report,
+                output_path,
+            )
+
+            with output_path.open(
+                "r",
+                encoding="utf-8",
+            ) as file:
+                data = json.load(file)
+
+            self.assertEqual(
+                data,
+                report,
+            )
+
+    def test_write_inventory_csv(self):
+        report = {
+            "target": "127.0.0.0/30",
+            "scanned_at": "2026-09-11T22:55:31+00:00",
+            "summary": {
+                "hosts_scanned": 2,
+                "responsive_hosts": 1,
+                "unresponsive_hosts": 1,
+                "hosts_with_open_services": 1,
+                "open_tcp_services": 1,
+            },
+            "hosts": self.host_results,
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = (
+                Path(temp_dir)
+                / "reports"
+                / "inventory.csv"
+            )
+
+            write_inventory_csv(
+                report,
+                output_path,
+            )
+
+            with output_path.open(
+                "r",
+                encoding="utf-8",
+                newline="",
+            ) as file:
+                rows = list(
+                    csv.DictReader(file)
+                )
+
+            self.assertEqual(
+                len(rows),
+                2,
+            )
+
+            self.assertEqual(
+                rows[0]["host"],
+                "127.0.0.1",
+            )
+
+            self.assertEqual(
+                rows[0]["responsive"],
+                "true",
+            )
+
+            self.assertEqual(
+                rows[0]["port"],
+                "8000",
+            )
+
+            self.assertEqual(
+                rows[0]["protocol"],
+                "tcp",
+            )
+
+            self.assertEqual(
+                rows[0]["service"],
+                "http-alt",
+            )
+
+            self.assertEqual(
+                rows[1]["host"],
+                "127.0.0.2",
+            )
+
+            self.assertEqual(
+                rows[1]["responsive"],
+                "false",
+            )
+
+            self.assertEqual(
+                rows[1]["port"],
+                "",
+            )
+
+
+class TestLegacyJSONExport(unittest.TestCase):
     def test_write_json_creates_valid_report(self):
         results = [
             {
