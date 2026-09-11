@@ -20,6 +20,28 @@ The main goals of this project is to:
 - Develop a secure and maintainable command-line tool.
 - Practice Git, GitHub, documentation and software testing.
 
+## Usage
+
+#### Activate the virtual environment:
+
+source .venv/bin/activate
+
+#### Scan the default TCP ports:
+
+python3 src/main.py --target 127.0.0.1
+
+#### Scan specific TCP ports:
+
+python3 src/main.py --target 127.0.0.1
+
+#### Short argument forms are also supported:
+
+python3 src/main.py -t 127.0.0.1 -p 22,80,443
+
+#### Display command-line help:
+
+python3 src/main.py --help
+
 ## Planned Features
 
 Planned functions for this tool will include:
@@ -42,8 +64,14 @@ Planned functions for this tool will include:
 
 Real scan results may contain sesitive data such as private IP addresses, hostnames and exposed services so I will not be commiting real world scan results into this repo I will use sanitised or sythentic examples instead.
 
+
 ## Project Status
 
-Currently supports IPv4 target validation and TCP connectivity scanning accross a predefined set of ports.
+The tool currently supports:
 
-The command-line interface supports target selection using '-t' or '--target'.
+- IPv4 target validation
+- TCP connection scanning
+- Default port scanning
+- User-selectable TCP ports
+- Port range validation
+- Command-line help and error handling
