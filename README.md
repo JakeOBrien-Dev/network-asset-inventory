@@ -52,7 +52,26 @@ PORT      STATE                   SERVICE
 443/tcp   CLOSED                  https
 8000/tcp  OPEN                    http-alt
 
-(Service names currently represent the conventional service associated with a port number and do not guarantee that the detected application is actually that service.)
+#### (Service names currently represent the conventional service associated with a port number and do not guarantee that the detected application is actually that service.)
+
+## Testing
+
+This project uses Python's built in 'unittest' framework.
+
+Run the full test suite from the project root:
+
+python3 -m unittest discover -s tests -v
+
+#### Current tests cover:
+
+- Valid IPv4 addresses
+- Invalid IPv4 adresses
+- IPv6 rejection
+- Valid port lists
+- Non-numeric ports
+- Out-of-range ports
+- Known service mappings
+- Unknown service handling
 
 ## Planned Features
 
