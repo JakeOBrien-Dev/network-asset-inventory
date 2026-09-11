@@ -56,6 +56,13 @@ or
 
 python3 src/main.py -t 127.0.0.1 -r 20-100
 
+#### Scan a small IPv4 subnet using CIDR notation:
+
+python3 src/main.py --target 127.0.0.0/30 --ports 8000,8001
+
+(The scanner expands supported IPv4 CIDR networks into individual usable host addresses and scans each host separately.)
+(Subnet scanning is currently limited to 16 usable hosts while scanning stays sequential.)
+
 ## Example Output
 
 Scanning 127.0.0.1...
@@ -88,6 +95,12 @@ python3 -m unittest discover -s tests -v
 - Unknown service handling
 - Structured scan-result generation
 - JSON report creation
+- IPv4 subnet validation
+- CIDR network normalisation
+- Host expansion from IPv4 subnets
+- Subnet size limits
+- Multi-host JSON reports
+- Socket error regression handling
 
 ## Planned Features
 
@@ -129,3 +142,10 @@ The tool currently supports:
 - Validation of malformed, backwards, and out-of-range port ranges
 - Mutually exclusive custom port-list and port-range options
 - 15 automated unit tests
+- Individual IPv4 host scanning
+- Small IPv4 subnet scanning using CIDR notation
+- Multi-host scan results
+- Multi-host JSON export
+- Cross-platform socket error handling
+- 23 automated unit tests
+- GitHub Actions continuous integration

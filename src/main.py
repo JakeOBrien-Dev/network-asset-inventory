@@ -8,6 +8,8 @@ from pathlib import Path
 
 DEFAULT_PORTS = [22, 80, 443, 8000]
 
+MAX_SUBNET_HOSTS = 16
+
 SERVICE_NAMES = {
     22: "ssh",
     25: "smtp",
@@ -36,6 +38,42 @@ def validate_ipv4(value):
         )
 
     return str(address)
+
+
+def validate_target(value):
+    if "/" not in value:
+        return validate_ipv4(value)
+
+    try:
+        network = ipaddress.ip_network(value, strict=False)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{value} is not a valid IPv4 network"
+        )
+
+    if network.version != 4:
+        raise argparse.ArgumentTypeError(
+            "Only IPv4 networks are currently supported"
+        )
+
+    hosts = list(network.hosts())
+
+    if len(hosts) > MAX_SUBNET_HOSTS:
+        raise argparse.ArgumentTypeError(
+            f"Subnet contains {len(hosts)} usable hosts. "
+            f"Current limit is {MAX_SUBNET_HOSTS} hosts"
+        )
+
+    return str(network)
+
+
+def expand_targets(target):
+    if "/" not in target:
+        return [target]
+
+    network = ipaddress.ip_network(target, strict=False)
+
+    return [str(host) for host in network.hosts()]
 
 
 def validate_ports(value):
@@ -85,15 +123,17 @@ def validate_port_range(value):
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Discover open TCP ports on an authorised target."
+        description=(
+            "Discover open TCP ports on an authorised IPv4 host or subnet."
+        )
     )
 
     parser.add_argument(
         "-t",
         "--target",
         required=True,
-        type=validate_ipv4,
-        help="IPv4 address to scan",
+        type=validate_target,
+        help="IPv4 address or CIDR network to scan",
     )
 
     port_group = parser.add_mutually_exclusive_group()
@@ -143,6 +183,8 @@ def check_port(target, port):
         errno.ETIMEDOUT,
         errno.EHOSTUNREACH,
         errno.ENETUNREACH,
+        errno.EAGAIN,
+        errno.EWOULDBLOCK,
     }:
         return "FILTERED/UNREACHABLE"
 
@@ -197,10 +239,25 @@ def write_json(target, results, output_path):
         json.dump(data, file, indent=4)
 
 
+def write_multi_host_json(target, host_results, output_path):
+    data = {
+        "target": target,
+        "hosts": host_results,
+    }
+
+    path = Path(output_path)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(data, file, indent=4)
+
+
 def main():
     args = parse_arguments()
 
     target = args.target
+    targets = expand_targets(target)
 
     if args.ports:
         ports = args.ports
@@ -209,14 +266,52 @@ def main():
     else:
         ports = DEFAULT_PORTS
 
-    print(f"Scanning {target}...\n")
+    if len(targets) == 1:
+        print(f"Scanning {targets[0]}...\n")
 
-    results = scan_ports(target, ports)
+        results = scan_ports(targets[0], ports)
 
-    display_results(results)
+        display_results(results)
+
+        if args.json_output:
+            write_json(
+                targets[0],
+                results,
+                args.json_output,
+            )
+
+            print(f"\nResults written to {args.json_output}")
+
+        return
+
+    print(
+        f"Scanning {target} "
+        f"({len(targets)} hosts)..."
+    )
+
+    host_results = []
+
+    for host in targets:
+        print(f"\nHost: {host}")
+
+        results = scan_ports(host, ports)
+
+        display_results(results)
+
+        host_results.append(
+            {
+                "host": host,
+                "results": results,
+            }
+        )
 
     if args.json_output:
-        write_json(target, results, args.json_output)
+        write_multi_host_json(
+            target,
+            host_results,
+            args.json_output,
+        )
+
         print(f"\nResults written to {args.json_output}")
 
 
