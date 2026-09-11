@@ -44,6 +44,6 @@ Real scan results may contain sesitive data such as private IP addresses, hostna
 
 ## Project Status
 
-Initial project structure created.
+Currently supports IPv4 target validation and TCP connectivity scanning accross a predefined set of ports.
 
-My next milestone is to implement basic TCP port connectivity testing using Python's standard socket library.
+The command-line interface supports target selection using '-t' or '--target'.
