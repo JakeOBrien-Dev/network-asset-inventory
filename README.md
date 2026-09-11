@@ -76,17 +76,33 @@ python3 src/main.py --target 127.0.0.0/30 --ports 8000,8001
 (The scanner expands supported IPv4 CIDR networks into individual usable host addresses and scans each host separately.)
 (Subnet scanning is currently limited to 16 usable hosts while scanning stays sequential.)
 
-## Example Output
+## Asset Inventory
 
-Scanning 127.0.0.1...
+The scanner converts raw TCP scan results into a higher-level asset inventory.
 
-PORT      STATE                   SERVICE
-22/tcp    CLOSED                  ssh
-80/tcp    CLOSED                  http
-443/tcp   CLOSED                  https
-8000/tcp  OPEN                    http-alt
+Each host record includes:
 
-#### (Service names currently represent the conventional service associated with a port number and do not guarantee that the detected application is actually that service.)
+- Whether the host produced a TCP response
+- Number of detected open TCP services
+- Open service details
+- Full underlying scan results
+
+A host is considered responsive when at least one scanned TCP port returns either `OPEN` or `CLOSED`, because both states indicate that the target responded.
+
+Example output:
+
+Host: 127.0.0.1
+Status: responsive
+Open services:
+  8000/tcp  http-alt
+
+Host: 127.0.0.2
+Status: no TCP response observed
+Open services: none detected
+
+Summary
+Responsive hosts: 1/2
+Open TCP services: 1
 
 ## Testing
 
@@ -117,6 +133,10 @@ python3 -m unittest discover -s tests -v
 - Worker-count validation
 - Concurrent port scan result handling
 - Deterministic host ordering after concurrent scans
+- Responsive and unresponsive host classification
+- Open-service extraction
+- Host inventory construction
+- Inventory JSON summary generation
 
 ## Planned Features
 
@@ -172,3 +192,9 @@ The tool currently supports:
 - Worker-count validation
 - 28 automated unit tests
 - GitHub Actions continuous integration
+- Host-level asset inventory records
+- Responsive-host identification
+- Open-service summaries
+- Inventory-level JSON reporting
+- Detailed raw scan results retained alongside asset summaries
+- 30 automated unit tests

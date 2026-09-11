@@ -50,7 +50,10 @@ def validate_target(value):
         return validate_ipv4(value)
 
     try:
-        network = ipaddress.ip_network(value, strict=False)
+        network = ipaddress.ip_network(
+            value,
+            strict=False,
+        )
     except ValueError:
         raise argparse.ArgumentTypeError(
             f"{value} is not a valid IPv4 network"
@@ -76,14 +79,23 @@ def expand_targets(target):
     if "/" not in target:
         return [target]
 
-    network = ipaddress.ip_network(target, strict=False)
+    network = ipaddress.ip_network(
+        target,
+        strict=False,
+    )
 
-    return [str(host) for host in network.hosts()]
+    return [
+        str(host)
+        for host in network.hosts()
+    ]
 
 
 def validate_ports(value):
     try:
-        ports = [int(port) for port in value.split(",")]
+        ports = [
+            int(port)
+            for port in value.split(",")
+        ]
     except ValueError:
         raise argparse.ArgumentTypeError(
             "Ports must be comma-separated numbers"
@@ -100,9 +112,14 @@ def validate_ports(value):
 
 def validate_port_range(value):
     try:
-        start_text, end_text = value.split("-", maxsplit=1)
+        start_text, end_text = value.split(
+            "-",
+            maxsplit=1,
+        )
+
         start = int(start_text)
         end = int(end_text)
+
     except ValueError:
         raise argparse.ArgumentTypeError(
             "Port range must use the format START-END"
@@ -123,7 +140,12 @@ def validate_port_range(value):
             "Start port must not be greater than end port"
         )
 
-    return list(range(start, end + 1))
+    return list(
+        range(
+            start,
+            end + 1,
+        )
+    )
 
 
 def validate_workers(value):
@@ -145,7 +167,8 @@ def validate_workers(value):
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description=(
-            "Discover open TCP ports on an authorised IPv4 host or subnet."
+            "Discover TCP services and build an inventory "
+            "of authorised IPv4 hosts."
         )
     )
 
@@ -195,13 +218,21 @@ def parse_arguments():
 
 
 def check_port(target, port):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    with socket.socket(
+        socket.AF_INET,
+        socket.SOCK_STREAM,
+    ) as sock:
+
         sock.settimeout(1)
 
         try:
-            result = sock.connect_ex((target, port))
+            result = sock.connect_ex(
+                (target, port)
+            )
+
         except socket.timeout:
             return "FILTERED/UNREACHABLE"
+
         except OSError:
             return "ERROR"
 
@@ -224,7 +255,10 @@ def check_port(target, port):
 
 
 def get_service_name(port):
-    return SERVICE_NAMES.get(port, "unknown")
+    return SERVICE_NAMES.get(
+        port,
+        "unknown",
+    )
 
 
 def build_result(port, state):
@@ -236,18 +270,34 @@ def build_result(port, state):
     }
 
 
-def scan_ports(target, ports, workers=DEFAULT_WORKERS):
+def scan_ports(
+    target,
+    ports,
+    workers=DEFAULT_WORKERS,
+):
     results = []
 
-    worker_count = min(workers, len(ports))
+    worker_count = min(
+        workers,
+        len(ports),
+    )
 
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+    with ThreadPoolExecutor(
+        max_workers=worker_count
+    ) as executor:
+
         future_to_port = {
-            executor.submit(check_port, target, port): port
+            executor.submit(
+                check_port,
+                target,
+                port,
+            ): port
             for port in ports
         }
 
-        for future in as_completed(future_to_port):
+        for future in as_completed(
+            future_to_port
+        ):
             port = future_to_port[future]
 
             try:
@@ -256,31 +306,84 @@ def scan_ports(target, ports, workers=DEFAULT_WORKERS):
                 state = "ERROR"
 
             results.append(
-                build_result(port, state)
+                build_result(
+                    port,
+                    state,
+                )
             )
 
-    results.sort(key=lambda result: result["port"])
+    results.sort(
+        key=lambda result: result["port"]
+    )
 
     return results
 
 
-def scan_host(host, ports, workers):
+def build_host_inventory(host, results):
+    open_services = []
+
+    for result in results:
+        if result["state"] == "OPEN":
+            open_services.append(
+                {
+                    "port": result["port"],
+                    "protocol": result["protocol"],
+                    "service": result["service"],
+                }
+            )
+
+    responsive = any(
+        result["state"] in {
+            "OPEN",
+            "CLOSED",
+        }
+        for result in results
+    )
+
     return {
         "host": host,
-        "results": scan_ports(
-            host,
-            ports,
-            workers,
+        "responsive": responsive,
+        "open_service_count": len(
+            open_services
         ),
+        "open_services": open_services,
+        "results": results,
     }
 
 
-def scan_targets(targets, ports, workers=DEFAULT_WORKERS):
+def scan_host(
+    host,
+    ports,
+    workers,
+):
+    results = scan_ports(
+        host,
+        ports,
+        workers,
+    )
+
+    return build_host_inventory(
+        host,
+        results,
+    )
+
+
+def scan_targets(
+    targets,
+    ports,
+    workers=DEFAULT_WORKERS,
+):
     host_results = []
 
-    worker_count = min(workers, len(targets))
+    worker_count = min(
+        workers,
+        len(targets),
+    )
 
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+    with ThreadPoolExecutor(
+        max_workers=worker_count
+    ) as executor:
+
         future_to_host = {
             executor.submit(
                 scan_host,
@@ -291,28 +394,42 @@ def scan_targets(targets, ports, workers=DEFAULT_WORKERS):
             for host in targets
         }
 
-        for future in as_completed(future_to_host):
+        for future in as_completed(
+            future_to_host
+        ):
             host = future_to_host[future]
 
             try:
                 result = future.result()
+
             except Exception:
                 result = {
                     "host": host,
+                    "responsive": False,
+                    "open_service_count": 0,
+                    "open_services": [],
                     "results": [],
                 }
 
-            host_results.append(result)
+            host_results.append(
+                result
+            )
 
     host_results.sort(
-        key=lambda item: ipaddress.ip_address(item["host"])
+        key=lambda item: ipaddress.ip_address(
+            item["host"]
+        )
     )
 
     return host_results
 
 
 def display_results(results):
-    print(f"{'PORT':<10}{'STATE':<24}SERVICE")
+    print(
+        f"{'PORT':<10}"
+        f"{'STATE':<24}"
+        f"SERVICE"
+    )
 
     for result in results:
         port = result["port"]
@@ -326,16 +443,57 @@ def display_results(results):
         )
 
 
-def display_host_results(host_results):
+def display_inventory(host_results):
+    responsive_hosts = 0
+    open_services = 0
+
     for host_result in host_results:
-        print(f"\nHost: {host_result['host']}")
+        host = host_result["host"]
+        responsive = host_result["responsive"]
+        services = host_result["open_services"]
 
-        display_results(
-            host_result["results"]
-        )
+        if responsive:
+            responsive_hosts += 1
+
+        open_services += len(services)
+
+        print(f"\nHost: {host}")
+
+        if responsive:
+            print("Status: responsive")
+        else:
+            print("Status: no TCP response observed")
+
+        if services:
+            print("Open services:")
+
+            for service in services:
+                print(
+                    f"  "
+                    f"{service['port']}/"
+                    f"{service['protocol']}"
+                    f"  "
+                    f"{service['service']}"
+                )
+        else:
+            print("Open services: none detected")
+
+    print("\nSummary")
+    print(
+        f"Responsive hosts: "
+        f"{responsive_hosts}/{len(host_results)}"
+    )
+    print(
+        f"Open TCP services: "
+        f"{open_services}"
+    )
 
 
-def write_json(target, results, output_path):
+def write_json(
+    target,
+    results,
+    output_path,
+):
     data = {
         "target": target,
         "results": results,
@@ -352,6 +510,7 @@ def write_json(target, results, output_path):
         "w",
         encoding="utf-8",
     ) as file:
+
         json.dump(
             data,
             file,
@@ -359,9 +518,31 @@ def write_json(target, results, output_path):
         )
 
 
-def write_multi_host_json(target, host_results, output_path):
+def write_inventory_json(
+    target,
+    host_results,
+    output_path,
+):
+    responsive_hosts = sum(
+        1
+        for host in host_results
+        if host["responsive"]
+    )
+
+    open_service_count = sum(
+        host["open_service_count"]
+        for host in host_results
+    )
+
     data = {
         "target": target,
+        "summary": {
+            "hosts_scanned": len(
+                host_results
+            ),
+            "responsive_hosts": responsive_hosts,
+            "open_tcp_services": open_service_count,
+        },
         "hosts": host_results,
     }
 
@@ -376,6 +557,7 @@ def write_multi_host_json(target, host_results, output_path):
         "w",
         encoding="utf-8",
     ) as file:
+
         json.dump(
             data,
             file,
@@ -392,29 +574,28 @@ def main():
 
     if args.ports:
         ports = args.ports
+
     elif args.port_range:
         ports = args.port_range
+
     else:
         ports = DEFAULT_PORTS
 
     if len(targets) == 1:
-        print(
-            f"Scanning {targets[0]} "
-            f"with up to {workers} workers...\n"
-        )
-
-        results = scan_ports(
+        host_result = scan_host(
             targets[0],
             ports,
             workers,
         )
 
-        display_results(results)
+        display_inventory(
+            [host_result]
+        )
 
         if args.json_output:
-            write_json(
-                targets[0],
-                results,
+            write_inventory_json(
+                target,
+                [host_result],
                 args.json_output,
             )
 
@@ -437,10 +618,12 @@ def main():
         workers,
     )
 
-    display_host_results(host_results)
+    display_inventory(
+        host_results
+    )
 
     if args.json_output:
-        write_multi_host_json(
+        write_inventory_json(
             target,
             host_results,
             args.json_output,
