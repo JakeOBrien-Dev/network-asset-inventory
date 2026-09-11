@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from src.main import (
+    build_host_inventory,
     check_port,
     expand_targets,
     get_service_name,
@@ -17,8 +18,8 @@ from src.main import (
     validate_ports,
     validate_target,
     validate_workers,
+    write_inventory_json,
     write_json,
-    write_multi_host_json,
 )
 
 
@@ -92,7 +93,10 @@ class TestPortValidation(unittest.TestCase):
 class TestPortRangeValidation(unittest.TestCase):
     def test_valid_port_range(self):
         result = validate_port_range("20-25")
-        self.assertEqual(result, [20, 21, 22, 23, 24, 25])
+        self.assertEqual(
+            result,
+            [20, 21, 22, 23, 24, 25],
+        )
 
     def test_malformed_port_range(self):
         with self.assertRaises(argparse.ArgumentTypeError):
@@ -129,27 +133,128 @@ class TestSocketStates(unittest.TestCase):
     @patch("src.main.socket.socket")
     def test_eagain_is_filtered_or_unreachable(self, mock_socket):
         mock_sock = MagicMock()
-        mock_socket.return_value.__enter__.return_value = mock_sock
 
+        mock_socket.return_value.__enter__.return_value = mock_sock
         mock_sock.connect_ex.return_value = errno.EAGAIN
 
-        result = check_port("127.0.0.2", 8000)
+        result = check_port(
+            "127.0.0.2",
+            8000,
+        )
 
-        self.assertEqual(result, "FILTERED/UNREACHABLE")
+        self.assertEqual(
+            result,
+            "FILTERED/UNREACHABLE",
+        )
 
 
 class TestServiceNames(unittest.TestCase):
     def test_known_service(self):
-        self.assertEqual(get_service_name(443), "https")
+        self.assertEqual(
+            get_service_name(443),
+            "https",
+        )
 
     def test_unknown_service(self):
-        self.assertEqual(get_service_name(54321), "unknown")
+        self.assertEqual(
+            get_service_name(54321),
+            "unknown",
+        )
+
+
+class TestInventoryModel(unittest.TestCase):
+    def test_responsive_host_inventory(self):
+        results = [
+            {
+                "port": 8000,
+                "protocol": "tcp",
+                "state": "OPEN",
+                "service": "http-alt",
+            },
+            {
+                "port": 8001,
+                "protocol": "tcp",
+                "state": "CLOSED",
+                "service": "unknown",
+            },
+        ]
+
+        inventory = build_host_inventory(
+            "127.0.0.1",
+            results,
+        )
+
+        self.assertTrue(
+            inventory["responsive"]
+        )
+
+        self.assertEqual(
+            inventory["open_service_count"],
+            1,
+        )
+
+        self.assertEqual(
+            inventory["open_services"],
+            [
+                {
+                    "port": 8000,
+                    "protocol": "tcp",
+                    "service": "http-alt",
+                }
+            ],
+        )
+
+        self.assertEqual(
+            inventory["results"],
+            results,
+        )
+
+    def test_unresponsive_host_inventory(self):
+        results = [
+            {
+                "port": 8000,
+                "protocol": "tcp",
+                "state": "FILTERED/UNREACHABLE",
+                "service": "http-alt",
+            },
+            {
+                "port": 8001,
+                "protocol": "tcp",
+                "state": "FILTERED/UNREACHABLE",
+                "service": "unknown",
+            },
+        ]
+
+        inventory = build_host_inventory(
+            "127.0.0.2",
+            results,
+        )
+
+        self.assertFalse(
+            inventory["responsive"]
+        )
+
+        self.assertEqual(
+            inventory["open_service_count"],
+            0,
+        )
+
+        self.assertEqual(
+            inventory["open_services"],
+            [],
+        )
 
 
 class TestScanResults(unittest.TestCase):
     @patch("src.main.check_port")
-    def test_scan_ports_returns_structured_results(self, mock_check_port):
-        mock_check_port.side_effect = ["OPEN", "CLOSED"]
+    def test_scan_ports_returns_structured_results(
+        self,
+        mock_check_port,
+    ):
+        mock_check_port.side_effect = [
+            "OPEN",
+            "CLOSED",
+        ]
 
         results = scan_ports(
             "127.0.0.1",
@@ -172,13 +277,22 @@ class TestScanResults(unittest.TestCase):
             },
         ]
 
-        self.assertEqual(results, expected)
+        self.assertEqual(
+            results,
+            expected,
+        )
 
     @patch("src.main.scan_host")
-    def test_scan_targets_returns_hosts_in_ip_order(self, mock_scan_host):
+    def test_scan_targets_returns_hosts_in_ip_order(
+        self,
+        mock_scan_host,
+    ):
         def fake_scan_host(host, ports, workers):
             return {
                 "host": host,
+                "responsive": True,
+                "open_service_count": 0,
+                "open_services": [],
                 "results": [],
             }
 
@@ -194,16 +308,13 @@ class TestScanResults(unittest.TestCase):
         )
 
         self.assertEqual(
-            results,
             [
-                {
-                    "host": "127.0.0.1",
-                    "results": [],
-                },
-                {
-                    "host": "127.0.0.2",
-                    "results": [],
-                },
+                result["host"]
+                for result in results
+            ],
+            [
+                "127.0.0.1",
+                "127.0.0.2",
             ],
         )
 
@@ -220,7 +331,11 @@ class TestJSONExport(unittest.TestCase):
         ]
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = Path(temp_dir) / "reports" / "scan.json"
+            output_path = (
+                Path(temp_dir)
+                / "reports"
+                / "scan.json"
+            )
 
             write_json(
                 "127.0.0.1",
@@ -228,52 +343,89 @@ class TestJSONExport(unittest.TestCase):
                 output_path,
             )
 
-            with output_path.open("r", encoding="utf-8") as file:
+            with output_path.open(
+                "r",
+                encoding="utf-8",
+            ) as file:
                 data = json.load(file)
 
-            self.assertEqual(data["target"], "127.0.0.1")
-            self.assertEqual(data["results"], results)
+            self.assertEqual(
+                data["target"],
+                "127.0.0.1",
+            )
 
-    def test_write_multi_host_json_creates_valid_report(self):
+            self.assertEqual(
+                data["results"],
+                results,
+            )
+
+    def test_write_inventory_json_creates_summary(self):
         host_results = [
             {
                 "host": "127.0.0.1",
-                "results": [
+                "responsive": True,
+                "open_service_count": 1,
+                "open_services": [
                     {
                         "port": 8000,
                         "protocol": "tcp",
-                        "state": "OPEN",
                         "service": "http-alt",
                     }
                 ],
+                "results": [],
             },
             {
                 "host": "127.0.0.2",
-                "results": [
-                    {
-                        "port": 8000,
-                        "protocol": "tcp",
-                        "state": "FILTERED/UNREACHABLE",
-                        "service": "http-alt",
-                    }
-                ],
+                "responsive": False,
+                "open_service_count": 0,
+                "open_services": [],
+                "results": [],
             },
         ]
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = Path(temp_dir) / "reports" / "subnet-scan.json"
+            output_path = (
+                Path(temp_dir)
+                / "reports"
+                / "inventory.json"
+            )
 
-            write_multi_host_json(
+            write_inventory_json(
                 "127.0.0.0/30",
                 host_results,
                 output_path,
             )
 
-            with output_path.open("r", encoding="utf-8") as file:
+            with output_path.open(
+                "r",
+                encoding="utf-8",
+            ) as file:
                 data = json.load(file)
 
-            self.assertEqual(data["target"], "127.0.0.0/30")
-            self.assertEqual(data["hosts"], host_results)
+            self.assertEqual(
+                data["target"],
+                "127.0.0.0/30",
+            )
+
+            self.assertEqual(
+                data["summary"]["hosts_scanned"],
+                2,
+            )
+
+            self.assertEqual(
+                data["summary"]["responsive_hosts"],
+                1,
+            )
+
+            self.assertEqual(
+                data["summary"]["open_tcp_services"],
+                1,
+            )
+
+            self.assertEqual(
+                data["hosts"],
+                host_results,
+            )
 
 
 if __name__ == "__main__":
