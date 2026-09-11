@@ -3,12 +3,17 @@ import errno
 import ipaddress
 import json
 import socket
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 
 DEFAULT_PORTS = [22, 80, 443, 8000]
 
 MAX_SUBNET_HOSTS = 16
+
+DEFAULT_WORKERS = 20
+
+MAX_WORKERS = 100
 
 SERVICE_NAMES = {
     22: "ssh",
@@ -121,6 +126,22 @@ def validate_port_range(value):
     return list(range(start, end + 1))
 
 
+def validate_workers(value):
+    try:
+        workers = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "Worker count must be a number"
+        )
+
+    if workers < 1 or workers > MAX_WORKERS:
+        raise argparse.ArgumentTypeError(
+            f"Worker count must be between 1 and {MAX_WORKERS}"
+        )
+
+    return workers
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description=(
@@ -151,6 +172,17 @@ def parse_arguments():
         dest="port_range",
         type=validate_port_range,
         help="TCP port range to scan, for example 20-100",
+    )
+
+    parser.add_argument(
+        "-w",
+        "--workers",
+        type=validate_workers,
+        default=DEFAULT_WORKERS,
+        help=(
+            f"Maximum concurrent workers "
+            f"(default: {DEFAULT_WORKERS}, max: {MAX_WORKERS})"
+        ),
     )
 
     parser.add_argument(
@@ -195,23 +227,88 @@ def get_service_name(port):
     return SERVICE_NAMES.get(port, "unknown")
 
 
-def scan_ports(target, ports):
+def build_result(port, state):
+    return {
+        "port": port,
+        "protocol": "tcp",
+        "state": state,
+        "service": get_service_name(port),
+    }
+
+
+def scan_ports(target, ports, workers=DEFAULT_WORKERS):
     results = []
 
-    for port in ports:
-        state = check_port(target, port)
-        service = get_service_name(port)
+    worker_count = min(workers, len(ports))
 
-        result = {
-            "port": port,
-            "protocol": "tcp",
-            "state": state,
-            "service": service,
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_to_port = {
+            executor.submit(check_port, target, port): port
+            for port in ports
         }
 
-        results.append(result)
+        for future in as_completed(future_to_port):
+            port = future_to_port[future]
+
+            try:
+                state = future.result()
+            except Exception:
+                state = "ERROR"
+
+            results.append(
+                build_result(port, state)
+            )
+
+    results.sort(key=lambda result: result["port"])
 
     return results
+
+
+def scan_host(host, ports, workers):
+    return {
+        "host": host,
+        "results": scan_ports(
+            host,
+            ports,
+            workers,
+        ),
+    }
+
+
+def scan_targets(targets, ports, workers=DEFAULT_WORKERS):
+    host_results = []
+
+    worker_count = min(workers, len(targets))
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_to_host = {
+            executor.submit(
+                scan_host,
+                host,
+                ports,
+                workers,
+            ): host
+            for host in targets
+        }
+
+        for future in as_completed(future_to_host):
+            host = future_to_host[future]
+
+            try:
+                result = future.result()
+            except Exception:
+                result = {
+                    "host": host,
+                    "results": [],
+                }
+
+            host_results.append(result)
+
+    host_results.sort(
+        key=lambda item: ipaddress.ip_address(item["host"])
+    )
+
+    return host_results
 
 
 def display_results(results):
@@ -222,7 +319,20 @@ def display_results(results):
         state = result["state"]
         service = result["service"]
 
-        print(f"{str(port) + '/tcp':<10}{state:<24}{service}")
+        print(
+            f"{str(port) + '/tcp':<10}"
+            f"{state:<24}"
+            f"{service}"
+        )
+
+
+def display_host_results(host_results):
+    for host_result in host_results:
+        print(f"\nHost: {host_result['host']}")
+
+        display_results(
+            host_result["results"]
+        )
 
 
 def write_json(target, results, output_path):
@@ -233,10 +343,20 @@ def write_json(target, results, output_path):
 
     path = Path(output_path)
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    with path.open("w", encoding="utf-8") as file:
-        json.dump(data, file, indent=4)
+    with path.open(
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(
+            data,
+            file,
+            indent=4,
+        )
 
 
 def write_multi_host_json(target, host_results, output_path):
@@ -247,10 +367,20 @@ def write_multi_host_json(target, host_results, output_path):
 
     path = Path(output_path)
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    with path.open("w", encoding="utf-8") as file:
-        json.dump(data, file, indent=4)
+    with path.open(
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(
+            data,
+            file,
+            indent=4,
+        )
 
 
 def main():
@@ -258,6 +388,7 @@ def main():
 
     target = args.target
     targets = expand_targets(target)
+    workers = args.workers
 
     if args.ports:
         ports = args.ports
@@ -267,9 +398,16 @@ def main():
         ports = DEFAULT_PORTS
 
     if len(targets) == 1:
-        print(f"Scanning {targets[0]}...\n")
+        print(
+            f"Scanning {targets[0]} "
+            f"with up to {workers} workers...\n"
+        )
 
-        results = scan_ports(targets[0], ports)
+        results = scan_ports(
+            targets[0],
+            ports,
+            workers,
+        )
 
         display_results(results)
 
@@ -280,30 +418,26 @@ def main():
                 args.json_output,
             )
 
-            print(f"\nResults written to {args.json_output}")
+            print(
+                f"\nResults written to "
+                f"{args.json_output}"
+            )
 
         return
 
     print(
         f"Scanning {target} "
-        f"({len(targets)} hosts)..."
+        f"({len(targets)} hosts) "
+        f"with up to {workers} workers..."
     )
 
-    host_results = []
+    host_results = scan_targets(
+        targets,
+        ports,
+        workers,
+    )
 
-    for host in targets:
-        print(f"\nHost: {host}")
-
-        results = scan_ports(host, ports)
-
-        display_results(results)
-
-        host_results.append(
-            {
-                "host": host,
-                "results": results,
-            }
-        )
+    display_host_results(host_results)
 
     if args.json_output:
         write_multi_host_json(
@@ -312,7 +446,10 @@ def main():
             args.json_output,
         )
 
-        print(f"\nResults written to {args.json_output}")
+        print(
+            f"\nResults written to "
+            f"{args.json_output}"
+        )
 
 
 if __name__ == "__main__":
