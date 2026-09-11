@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+.venv/
+
+# IDEs
+.vscode/
+.idea/
+
+# Secrets/environment configuration
+.env
+.env.*
+
+# Real scan results may reveal private network information
+output/
+*.scan.json
+*.scan.csv
