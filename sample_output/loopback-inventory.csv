@@ -1,0 +1,3 @@
+scan_target,scanned_at,host,responsive,open_service_count,port,protocol,service
+127.0.0.0/30,2026-09-12T00:03:00+00:00,127.0.0.1,true,1,8000,tcp,http-alt
+127.0.0.0/30,2026-09-12T00:03:00+00:00,127.0.0.2,false,0,,,
