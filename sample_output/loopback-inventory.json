@@ -1,0 +1,59 @@
+{
+    "target": "127.0.0.0/30",
+    "scanned_at": "2026-09-12T00:03:00+00:00",
+    "summary": {
+        "hosts_scanned": 2,
+        "responsive_hosts": 1,
+        "unresponsive_hosts": 1,
+        "hosts_with_open_services": 1,
+        "open_tcp_services": 1
+    },
+    "hosts": [
+        {
+            "host": "127.0.0.1",
+            "responsive": true,
+            "open_service_count": 1,
+            "open_services": [
+                {
+                    "port": 8000,
+                    "protocol": "tcp",
+                    "service": "http-alt"
+                }
+            ],
+            "results": [
+                {
+                    "port": 8000,
+                    "protocol": "tcp",
+                    "state": "OPEN",
+                    "service": "http-alt"
+                },
+                {
+                    "port": 8001,
+                    "protocol": "tcp",
+                    "state": "CLOSED",
+                    "service": "unknown"
+                }
+            ]
+        },
+        {
+            "host": "127.0.0.2",
+            "responsive": false,
+            "open_service_count": 0,
+            "open_services": [],
+            "results": [
+                {
+                    "port": 8000,
+                    "protocol": "tcp",
+                    "state": "FILTERED/UNREACHABLE",
+                    "service": "http-alt"
+                },
+                {
+                    "port": 8001,
+                    "protocol": "tcp",
+                    "state": "FILTERED/UNREACHABLE",
+                    "service": "unknown"
+                }
+            ]
+        }
+    ]
+}
